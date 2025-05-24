@@ -1,0 +1,55 @@
+[mysqld]
+# Performance tuning for high load
+max_connections = 500
+max_connect_errors = 100000
+table_open_cache = 4000
+table_definition_cache = 2000
+
+# Buffer sizes
+innodb_buffer_pool_size = 1G
+innodb_buffer_pool_instances = 4
+innodb_log_file_size = 256M
+innodb_log_buffer_size = 64M
+innodb_flush_log_at_trx_commit = 2
+
+# Query cache
+query_cache_type = 1
+query_cache_size = 256M
+query_cache_limit = 2M
+
+# Temporary tables
+tmp_table_size = 256M
+max_heap_table_size = 256M
+
+# MyISAM
+key_buffer_size = 256M
+myisam_sort_buffer_size = 128M
+
+# Connection handling
+thread_cache_size = 50
+thread_stack = 256K
+
+# Slow query log
+slow_query_log = 1
+slow_query_log_file = /var/log/mysql/slow.log
+long_query_time = 2
+
+# Binary logging
+log_bin = mysql-bin
+binlog_format = ROW
+expire_logs_days = 7
+
+# InnoDB settings
+innodb_file_per_table = 1
+innodb_flush_method = O_DIRECT
+innodb_io_capacity = 2000
+innodb_read_io_threads = 8
+innodb_write_io_threads = 8
+
+# Character set
+character_set_server = utf8mb4
+collation_server = utf8mb4_unicode_ci
+
+# Timeouts
+wait_timeout = 600
+interactive_timeout = 600
