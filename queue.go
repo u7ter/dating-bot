@@ -113,11 +113,6 @@ func (b *Bot) matchWorker(workerID int) {
 					if data, err := json.Marshal(job); err == nil {
 						b.redis.LPush(b.ctx, "match_queue_retry", data)
 					}
-				} else {
-					// Send to dead letter queue
-					if data, err := json.Marshal(job); err == nil {
-						b.redis.LPush(b.ctx, "match_queue_failed", data)
-					}
 				}
 			}
 		}
@@ -156,13 +151,6 @@ func (b *Bot) notificationWorker() {
 
 			if err := b.processNotificationJob(&job); err != nil {
 				log.Printf("Notification worker: failed to process notification: %v", err)
-
-				if job.Retries < 3 {
-					job.Retries++
-					if data, err := json.Marshal(job); err == nil {
-						b.redis.LPush(b.ctx, "notification_queue_retry", data)
-					}
-				}
 			}
 		}
 	}
@@ -189,7 +177,7 @@ func (b *Bot) cleanupWorker() {
 
 func (b *Bot) processMatchJob(job *MatchJob) error {
 	// Use circuit breaker for database operations
-	result, err := b.circuitBreaker.Execute(func() (interface{}, error) {
+	_, err := b.circuitBreaker.Execute(func() (interface{}, error) {
 		return nil, b.createMatchInDB(job.User1ID, job.User2ID)
 	})
 
@@ -217,11 +205,19 @@ func (b *Bot) processNotificationJob(job *NotificationJob) error {
 		return b.sendMatchNotification(job.UserID, job.Data)
 	case "new_message":
 		return b.sendMessageNotification(job.UserID, job.Data)
-	case "profile_view":
-		return b.sendProfileViewNotification(job.UserID, job.Data)
 	default:
 		log.Printf("Unknown notification type: %s", job.Type)
 	}
+	return nil
+}
+
+func (b *Bot) sendMatchNotification(userID int64, data string) error {
+	// Implementation for match notification
+	return nil
+}
+
+func (b *Bot) sendMessageNotification(userID int64, data string) error {
+	// Implementation for message notification
 	return nil
 }
 
@@ -240,109 +236,5 @@ func (b *Bot) performCleanup() {
 		}
 	}
 
-	// Clean up old rate limit data
-	pattern = "rate_limit:*"
-	keys, err = b.redis.Keys(b.ctx, pattern).Result()
-	if err == nil {
-		for _, key := range keys {
-			// Remove entries older than 1 hour
-			cutoff := time.Now().Add(-time.Hour).UnixNano()
-			b.redis.ZRemRangeByScore(b.ctx, key, "0", fmt.Sprintf("%d", cutoff))
-		}
-	}
-
-	// Clean up old activity data
-	cutoff := time.Now().Add(-time.Hour * 24).Unix()
-	pattern = "activity:*"
-	keys, err = b.redis.Keys(b.ctx, pattern).Result()
-	if err == nil {
-		for _, key := range keys {
-			timestamp, _ := b.redis.Get(b.ctx, key).Int64()
-			if timestamp < cutoff {
-				b.redis.Del(b.ctx, key)
-			}
-		}
-	}
-
 	log.Println("Cleanup process completed")
-}
-
-// Priority queue for important notifications
-func (mq *MatchQueue) AddPriorityNotification(userID int64, notificationType, data string, priority int) error {
-	job := NotificationJob{
-		UserID:    userID,
-		Type:      notificationType,
-		Data:      data,
-		Timestamp: time.Now(),
-		Retries:   0,
-	}
-
-	jobData, err := json.Marshal(job)
-	if err != nil {
-		return err
-	}
-
-	queueName := fmt.Sprintf("notification_queue_p%d", priority)
-	return mq.redis.LPush(mq.ctx, queueName, jobData).Err()
-}
-
-// Batch processing for better performance
-func (mq *MatchQueue) AddBatchMatchJobs(jobs []MatchJob) error {
-	pipe := mq.redis.Pipeline()
-
-	for _, job := range jobs {
-		data, err := json.Marshal(job)
-		if err != nil {
-			continue
-		}
-		pipe.LPush(mq.ctx, "match_queue", data)
-	}
-
-	_, err := pipe.Exec(mq.ctx)
-	return err
-}
-
-// Delayed job processing
-func (mq *MatchQueue) AddDelayedJob(job interface{}, delay time.Duration, queueName string) error {
-	data, err := json.Marshal(job)
-	if err != nil {
-		return err
-	}
-
-	executeAt := time.Now().Add(delay).Unix()
-	return mq.redis.ZAdd(mq.ctx, "delayed_jobs", &redis.Z{
-		Score:  float64(executeAt),
-		Member: fmt.Sprintf("%s:%s", queueName, string(data)),
-	}).Err()
-}
-
-// Process delayed jobs
-func (b *Bot) processDelayedJobs() {
-	now := time.Now().Unix()
-
-	// Get jobs that should be executed now
-	jobs, err := b.redis.ZRangeByScore(b.ctx, "delayed_jobs", &redis.ZRangeBy{
-		Min: "0",
-		Max: fmt.Sprintf("%d", now),
-	}).Result()
-
-	if err != nil {
-		return
-	}
-
-	for _, job := range jobs {
-		parts := strings.SplitN(job, ":", 2)
-		if len(parts) != 2 {
-			continue
-		}
-
-		queueName := parts[0]
-		jobData := parts[1]
-
-		// Move to appropriate queue
-		b.redis.LPush(b.ctx, queueName, jobData)
-
-		// Remove from delayed jobs
-		b.redis.ZRem(b.ctx, "delayed_jobs", job)
-	}
 }

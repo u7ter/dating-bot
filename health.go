@@ -2,8 +2,9 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
+	"log"
 	"net/http"
+	"runtime"
 	"time"
 )
 
@@ -63,17 +64,8 @@ func (b *Bot) checkHealth() HealthStatus {
 		services["redis"] = "healthy"
 	}
 
-	// Check queue lengths
-	matchQueueLen, _ := b.redis.LLen(b.ctx, "match_queue").Result()
-	notificationQueueLen, _ := b.redis.LLen(b.ctx, "notification_queue").Result()
-
-	metrics["match_queue_length"] = matchQueueLen
-	metrics["notification_queue_length"] = notificationQueueLen
+	// Get metrics
 	metrics["goroutines"] = int64(runtime.NumGoroutine())
-
-	// Get active users
-	activeUsers, _ := b.redis.Get(b.ctx, "system:active_users").Int64()
-	metrics["active_users"] = activeUsers
 
 	// Determine overall status
 	status := "healthy"
@@ -82,11 +74,6 @@ func (b *Bot) checkHealth() HealthStatus {
 			status = "unhealthy"
 			break
 		}
-	}
-
-	// Check if queues are too long
-	if matchQueueLen > 1000 || notificationQueueLen > 1000 {
-		status = "degraded"
 	}
 
 	return HealthStatus{
@@ -99,14 +86,8 @@ func (b *Bot) checkHealth() HealthStatus {
 
 func (b *Bot) metricsHandler(w http.ResponseWriter, r *http.Request) {
 	metrics := NewMetrics(b.redis)
-
-	// Get recent metrics
-	recentMetrics, err := metrics.GetMetricsHistory(1)
-	if err != nil {
-		http.Error(w, "Failed to get metrics", http.StatusInternalServerError)
-		return
-	}
+	systemMetrics := metrics.collectSystemMetrics()
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(recentMetrics)
+	json.NewEncoder(w).Encode(systemMetrics)
 }

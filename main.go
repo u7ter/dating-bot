@@ -31,15 +31,6 @@ type Bot struct {
 	wg             *sync.WaitGroup
 }
 
-type Config struct {
-	TelegramToken    string
-	DatabaseURL      string
-	RedisURL         string
-	MaxDBConnections int
-	RateLimit        int
-	BurstLimit       int
-	WorkerCount      int
-}
 type User struct {
 	ID          int64     `json:"id"`
 	TelegramID  int64     `json:"telegram_id"`
@@ -71,12 +62,24 @@ type Like struct {
 }
 
 type UserState struct {
-	TelegramID int64
-	State      string
-	Data       map[string]interface{}
+	TelegramID int64                  `json:"telegram_id"`
+	State      string                 `json:"state"`
+	Data       map[string]interface{} `json:"data"`
 }
 
+type Config struct {
+	TelegramToken    string
+	DatabaseURL      string
+	RedisURL         string
+	MaxDBConnections int
+	RateLimit        int
+	BurstLimit       int
+	WorkerCount      int
+}
+
+// Keep memory states as fallback
 var userStates = make(map[int64]*UserState)
+var userStatesMutex = sync.RWMutex{}
 
 func main() {
 	config := loadConfig()
@@ -122,6 +125,9 @@ func main() {
 	// Start background workers
 	app.startWorkers(config.WorkerCount)
 
+	// Start health server
+	go app.startHealthServer()
+
 	// Register handlers
 	app.registerHandlers()
 
@@ -131,7 +137,7 @@ func main() {
 	// Graceful shutdown
 	go app.handleShutdown()
 
-	log.Println("Bot started with high-load optimizations...")
+	log.Println("Bot started with fixed button handling...")
 	app.Start()
 }
 

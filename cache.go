@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strconv"
 	"time"
 
 	"github.com/go-redis/redis/v8"
@@ -137,33 +136,6 @@ func (uc *UserCache) GetDailyStats(metric string, date time.Time) (int64, error)
 	return uc.redis.Get(uc.ctx, key).Int64()
 }
 
-// Cache popular users (most liked)
-func (uc *UserCache) AddToPopularUsers(userID int64, score float64) error {
-	key := "popular_users"
-	return uc.redis.ZAdd(uc.ctx, key, &redis.Z{
-		Score:  score,
-		Member: userID,
-	}).Err()
-}
-
-// Get popular users
-func (uc *UserCache) GetPopularUsers(limit int64) ([]int64, error) {
-	key := "popular_users"
-	result, err := uc.redis.ZRevRange(uc.ctx, key, 0, limit-1).Result()
-	if err != nil {
-		return nil, err
-	}
-
-	var userIDs []int64
-	for _, member := range result {
-		if id, err := strconv.ParseInt(member, 10, 64); err == nil {
-			userIDs = append(userIDs, id)
-		}
-	}
-
-	return userIDs, nil
-}
-
 // Cache recent activity
 func (uc *UserCache) SetUserActivity(userID int64) error {
 	key := fmt.Sprintf("activity:%d", userID)
@@ -182,52 +154,14 @@ func (uc *UserCache) IsUserActive(userID int64, threshold time.Duration) (bool, 
 	return time.Since(lastActivity) < threshold, nil
 }
 
-// Batch operations for better performance
-func (uc *UserCache) SetMultipleUsers(users []*User) error {
-	pipe := uc.redis.Pipeline()
-
-	for _, user := range users {
-		key := fmt.Sprintf("user:%d", user.TelegramID)
-		data, err := json.Marshal(user)
-		if err != nil {
-			continue
-		}
-		pipe.Set(uc.ctx, key, data, time.Hour)
-	}
-
-	_, err := pipe.Exec(uc.ctx)
-	return err
+// Track cache hit
+func (uc *UserCache) TrackCacheHit() {
+	uc.redis.Incr(uc.ctx, "cache_hits")
+	uc.redis.Expire(uc.ctx, "cache_hits", time.Hour)
 }
 
-// Cache geo-location data
-func (uc *UserCache) SetUserLocation(userID int64, lat, lon float64) error {
-	key := "user_locations"
-	return uc.redis.GeoAdd(uc.ctx, key, &redis.GeoLocation{
-		Name:      fmt.Sprintf("%d", userID),
-		Longitude: lon,
-		Latitude:  lat,
-	}).Err()
-}
-
-// Get nearby users
-func (uc *UserCache) GetNearbyUsers(userID int64, radius float64) ([]int64, error) {
-	key := "user_locations"
-	result, err := uc.redis.GeoRadius(uc.ctx, key, fmt.Sprintf("%d", userID), &redis.GeoRadiusQuery{
-		Radius: radius,
-		Unit:   "km",
-		Count:  100,
-	}).Result()
-
-	if err != nil {
-		return nil, err
-	}
-
-	var nearbyUsers []int64
-	for _, location := range result {
-		if id, err := strconv.ParseInt(location.Name, 10, 64); err == nil && id != userID {
-			nearbyUsers = append(nearbyUsers, id)
-		}
-	}
-
-	return nearbyUsers, nil
+// Track cache miss
+func (uc *UserCache) TrackCacheMiss() {
+	uc.redis.Incr(uc.ctx, "cache_misses")
+	uc.redis.Expire(uc.ctx, "cache_misses", time.Hour)
 }

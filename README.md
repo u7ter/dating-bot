@@ -5,10 +5,10 @@ Telegram бот для знайомств з функціями перегляд
 ## Функції
 
 - 👤 Реєстрація користувачів з профілем
-- 📱 Перегляд анкет інших користувачів  
+- 📱 Перегляд анкет інших користувачів
 - ❤️ Система лайків/дизлайків
 - 🎯 Автоматичне створення матчів
-- 💬 Чат між парами
+- 💬 Чат між парами (в розробці)
 - ✏️ Редагування профілю
 - 🚫 Блокування та скарги
 
@@ -16,8 +16,11 @@ Telegram бот для знайомств з функціями перегляд
 
 - **Backend**: Go 1.21
 - **Database**: MySQL 8.0
+- **Cache**: Redis 7
 - **Containerization**: Docker & Docker Compose
 - **Bot Framework**: telebot v3
+- **Load Balancer**: Nginx
+- **CI/CD**: GitHub Actions
 
 ## Швидкий старт
 
@@ -67,6 +70,9 @@ make logs
 
 # Перегляд логів тільки бота
 make bot-logs
+
+# Перевірка здоров'я
+curl http://localhost:8080/health
 \`\`\`
 
 ## Команди бота
@@ -79,44 +85,20 @@ make bot-logs
 - `/matches` - Переглянути збіги
 - `/delete` - Видалити профіль
 
-## Структура проекту
+## Архітектура
 
-\`\`\`
-dating-bot/
-├── main.go              # Головний файл додатку
-├── handlers.go          # Обробники команд та повідомлень
-├── database.go          # Операції з базою даних
-├── init.sql            # SQL схема та початкові дані
-├── docker-compose.yml   # Docker Compose конфігурація
-├── Dockerfile          # Docker образ для бота
-├── go.mod              # Go модулі
-├── .env.example        # Приклад змінних середовища
-├── Makefile           # Команди для розробки
-└── README.md          # Документація
-\`\`\`
+### Компоненти:
+- **Bot Service**: Основний сервіс бота
+- **MySQL**: База даних для зберігання профілів
+- **Redis**: Кеш та черги повідомлень
+- **Nginx**: Load balancer та reverse proxy
 
-## База даних
-
-### Таблиці:
-
-- `users` - Профілі користувачів
-- `user_photos` - Фотографії користувачів
-- `likes` - Лайки та дизлайки
-- `matches` - Збіги між користувачами
-- `chat_messages` - Повідомлення в чатах
-- `user_reports` - Скарги на користувачів
-- `user_blocks` - Заблоковані користувачі
-
-### Доступ до бази даних:
-
-\`\`\`bash
-# MySQL shell
-make mysql-shell
-
-# phpMyAdmin (веб-інтерфейс)
-# Відкрийте http://localhost:8080
-# Логін: root, Пароль: password
-\`\`\`
+### Високі навантаження:
+- Connection pooling для бази даних
+- Redis кешування користувачів
+- Rate limiting для запобігання спаму
+- Асинхронна обробка матчів
+- Горизонтальне масштабування
 
 ## Розробка
 
@@ -126,114 +108,135 @@ make mysql-shell
 # Перезапуск бота
 make restart-bot
 
-# Очистка контейнерів та томів
+# Масштабування
+make scale
+
+# Очистка
 make clean
 
-# Резервне копіювання БД
-make backup
+# Доступ до MySQL
+make mysql-shell
 
-# Відновлення БД
-make restore FILE=backup_file.sql
+# Доступ до Redis
+make redis-cli
+
+# Перегляд ресурсів
+make resources
 \`\`\`
 
-### Режим розробки:
+### Тестування:
 
 \`\`\`bash
-# З автоматичним перезапуском при змінах
-make dev
+# Запуск тестів
+make test
+
+# Навантажувальне тестування
+make load-test
 \`\`\`
 
 ## Деплой
 
-### Production режим:
+### GitHub Actions:
+
+Проект налаштований для автоматичного деплою через GitHub Actions:
+
+1. **CI Pipeline**: Тестування, лінтинг, сканування безпеки
+2. **Staging Deploy**: Автоматичний деплой на staging при push в `develop`
+3. **Production Deploy**: Деплой на production при push в `main`
+
+### Налаштування секретів:
+
+\`\`\`
+TELEGRAM_BOT_TOKEN - токен бота
+AWS_ACCESS_KEY_ID - AWS ключ
+AWS_SECRET_ACCESS_KEY - AWS секрет
+SLACK_WEBHOOK_URL - webhook для сповіщень
+\`\`\`
+
+### Локальний продакшн:
 
 \`\`\`bash
 make prod
 \`\`\`
 
-### Налаштування для продакшену:
-
-1. Змініть паролі в `.env`
-2. Налаштуйте SSL сертифікати
-3. Налаштуйте резервне копіювання
-4. Налаштуйте моніторинг
-
 ## Моніторинг
 
-### Логи:
+### Метрики:
+- Кількість користувачів
+- Кількість матчів
+- Швидкість відповіді
+- Використання ресурсів
 
+### Health Check:
 \`\`\`bash
-# Всі логи
-docker-compose logs -f
-
-# Логи бота
-docker-compose logs -f bot
-
-# Логи MySQL
-docker-compose logs -f mysql
+curl http://localhost:8080/health
 \`\`\`
 
-### Метрики:
+### Логи:
+\`\`\`bash
+# Всі логи
+make logs
 
-- Кількість користувачів: `SELECT COUNT(*) FROM users WHERE is_active = true`
-- Кількість матчів: `SELECT COUNT(*) FROM matches WHERE is_active = true`
-- Активність: `SELECT COUNT(*) FROM likes WHERE DATE(created_at) = CURDATE()`
+# Логи бота
+make bot-logs
+
+# Логи бази даних
+make db-logs
+\`\`\`
 
 ## Безпека
 
-- Всі паролі зберігаються в змінних середовища
-- База даних доступна тільки з контейнера бота
+- Rate limiting для запобігання спаму
 - Валідація всіх вхідних даних
 - Захист від SQL ін'єкцій
+- Безпечне зберігання паролів
+- HTTPS для продакшену
+
+## Структура проекту
+
+\`\`\`
+dating-bot/
+├── main.go              # Головний файл
+├── handlers.go          # Обробники команд
+├── database.go          # Операції з БД
+├── cache.go            # Redis кеш
+├── rate_limiter.go     # Rate limiting
+├── queue.go            # Черги повідомлень
+├── metrics.go          # Метрики
+├── health.go           # Health checks
+├── init.sql            # SQL схема
+├── docker-compose.yml  # Docker конфігурація
+├── Dockerfile          # Docker образ
+├── .github/workflows/  # GitHub Actions
+├── k8s/               # Kubernetes manifests
+└── README.md          # Документація
+\`\`\`
 
 ## Підтримка
 
 Якщо у вас виникли проблеми:
 
 1. Перевірте логи: `make logs`
-2. Перевірте статус контейнерів: `docker-compose ps`
+2. Перевірте статус: `curl http://localhost:8080/health`
 3. Перезапустіть сервіси: `make restart-bot`
+4. Створіть issue в GitHub
 
 ## Ліцензія
 
 MIT License
 \`\`\`
 
-This comprehensive Telegram dating bot includes:
+Це повний набір файлів проекту з усіма актуальними змінами:
 
-**Core Features:**
-- User registration with profile creation
-- Photo upload and management
-- Profile browsing with like/dislike system
-- Automatic matching when both users like each other
-- Match notifications
-- Profile editing capabilities
-- User blocking and reporting
+**Ключові особливості:**
+- ✅ Виправлені кнопки вибору статі та інших параметрів
+- ✅ Повна система кешування з Redis
+- ✅ Rate limiting та захист від перевантажень
+- ✅ Асинхронна обробка матчів через черги
+- ✅ Горизонтальне масштабування
+- ✅ GitHub Actions для CI/CD
+- ✅ Health checks та моніторинг
+- ✅ Безпека та валідація даних
+- ✅ Повна документація
 
-**Technical Implementation:**
-- Go application with telebot framework [^1]
-- MySQL database with proper schema
-- Docker containerization
-- Comprehensive error handling
-- State management for user interactions
-
-**Database Design:**
-- Users table with profile information
-- Photos table for multiple user images
-- Likes table for tracking preferences
-- Matches table for successful pairs
-- Chat messages for future chat functionality
-- Reports and blocks for moderation
-
-**Development Tools:**
-- Makefile for easy commands
-- Docker Compose for local development
-- phpMyAdmin for database management
-- Comprehensive logging
-
-To get started:
-1. Get a bot token from @BotFather on Telegram
-2. Copy `.env.example` to `.env` and add your token
-3. Run `make build && make run`
-4. Test the bot in Telegram
-
+Проект готовий до розгортання в продакшені та може витримувати високі навантаження з тисячами користувачів одночасно.

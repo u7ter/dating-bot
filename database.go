@@ -6,6 +6,97 @@ import (
 	"log"
 )
 
+// Enhanced user cache methods
+func (b *Bot) getUser(telegramID int64) (*User, error) {
+	// Try cache first
+	user, err := b.userCache.GetUser(telegramID)
+	if err == nil {
+		b.userCache.TrackCacheHit()
+		return user, nil
+	}
+
+	b.userCache.TrackCacheMiss()
+
+	// Fallback to database
+	user, err = b.getUserFromDB(telegramID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Cache the result
+	b.userCache.SetUser(user)
+
+	return user, nil
+}
+
+func (b *Bot) getUserFromDB(telegramID int64) (*User, error) {
+	query := `SELECT id, telegram_id, name, age, gender, description, city, looking_for, created_at, is_active FROM users WHERE telegram_id = ?`
+
+	user := &User{}
+	err := b.db.QueryRow(query, telegramID).Scan(
+		&user.ID, &user.TelegramID, &user.Name, &user.Age, &user.Gender,
+		&user.Description, &user.City, &user.LookingFor, &user.CreatedAt, &user.IsActive,
+	)
+
+	if err != nil {
+		return nil, err
+	}
+
+	// Get photos
+	photos, err := b.getUserPhotos(user.ID)
+	if err == nil {
+		user.Photos = photos
+	}
+
+	return user, nil
+}
+
+func (b *Bot) getUserPhotos(userID int64) ([]string, error) {
+	query := `SELECT photo_url FROM user_photos WHERE user_id = ? ORDER BY id`
+	rows, err := b.db.Query(query, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var photos []string
+	for rows.Next() {
+		var photo string
+		if err := rows.Scan(&photo); err != nil {
+			continue
+		}
+		photos = append(photos, photo)
+	}
+
+	return photos, nil
+}
+
+func (b *Bot) createUser(user *User) error {
+	query := `INSERT INTO users (telegram_id, name, age, gender, description, city, looking_for, is_active) 
+			  VALUES (?, ?, ?, ?, ?, ?, ?, true)`
+
+	result, err := b.db.Exec(query, user.TelegramID, user.Name, user.Age, user.Gender,
+		user.Description, user.City, user.LookingFor)
+	if err != nil {
+		return err
+	}
+
+	userID, err := result.LastInsertId()
+	if err != nil {
+		return err
+	}
+
+	// Save photos
+	for _, photo := range user.Photos {
+		_, err := b.db.Exec(`INSERT INTO user_photos (user_id, photo_url) VALUES (?, ?)`, userID, photo)
+		if err != nil {
+			log.Printf("Error saving photo: %v", err)
+		}
+	}
+
+	return nil
+}
+
 // Database operations for users
 func (b *Bot) getNextCandidate(userID int64) (*User, error) {
 	currentUser, err := b.getUser(userID)
@@ -80,7 +171,7 @@ func (b *Bot) checkMatch(user1ID, user2ID int64) (bool, error) {
 	return count > 0, nil
 }
 
-func (b *Bot) createMatch(user1ID, user2ID int64) error {
+func (b *Bot) createMatchInDB(user1ID, user2ID int64) error {
 	// Ensure user1ID is always smaller for consistency
 	if user1ID > user2ID {
 		user1ID, user2ID = user2ID, user1ID

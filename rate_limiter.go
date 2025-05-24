@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/go-redis/redis/v8"
@@ -59,27 +60,6 @@ func (rl *RateLimiter) IsAllowed(userID int64) (bool, error) {
 	return count < int64(rl.rateLimit), nil
 }
 
-// Rate limiting middleware
-func (b *Bot) RateLimitMiddleware() tele.MiddlewareFunc {
-	return func(next tele.HandlerFunc) tele.HandlerFunc {
-		return func(c tele.Context) error {
-			userID := c.Sender().ID
-
-			allowed, err := b.rateLimiter.IsAllowed(userID)
-			if err != nil {
-				log.Printf("Rate limiter error: %v", err)
-				return next(c) // Allow on error
-			}
-
-			if !allowed {
-				return c.Send("⚠️ Забагато запитів. Спробуйте через хвилину.")
-			}
-
-			return next(c)
-		}
-	}
-}
-
 // Advanced rate limiting with different limits for different actions
 func (rl *RateLimiter) IsActionAllowed(userID int64, action string) (bool, error) {
 	limits := map[string]int{
@@ -117,79 +97,23 @@ func (rl *RateLimiter) IsActionAllowed(userID int64, action string) (bool, error
 	return count < int64(limit), nil
 }
 
-// IP-based rate limiting for additional protection
-func (rl *RateLimiter) IsIPAllowed(ip string) (bool, error) {
-	key := fmt.Sprintf("ip_rate_limit:%s", ip)
+// Rate limiting middleware
+func (b *Bot) RateLimitMiddleware() tele.MiddlewareFunc {
+	return func(next tele.HandlerFunc) tele.HandlerFunc {
+		return func(c tele.Context) error {
+			userID := c.Sender().ID
 
-	count, err := rl.redis.Incr(rl.ctx, key).Result()
-	if err != nil {
-		return false, err
+			allowed, err := b.rateLimiter.IsAllowed(userID)
+			if err != nil {
+				log.Printf("Rate limiter error: %v", err)
+				return next(c) // Allow on error
+			}
+
+			if !allowed {
+				return c.Send("⚠️ Забагато запитів. Спробуйте через хвилину.")
+			}
+
+			return next(c)
+		}
 	}
-
-	if count == 1 {
-		rl.redis.Expire(rl.ctx, key, time.Minute)
-	}
-
-	return count <= int64(rl.burstLimit), nil
-}
-
-// Global rate limiting
-func (rl *RateLimiter) IsGlobalAllowed() (bool, error) {
-	key := "global_rate_limit"
-
-	count, err := rl.redis.Incr(rl.ctx, key).Result()
-	if err != nil {
-		return false, err
-	}
-
-	if count == 1 {
-		rl.redis.Expire(rl.ctx, key, time.Second)
-	}
-
-	// Allow 1000 requests per second globally
-	return count <= 1000, nil
-}
-
-// Adaptive rate limiting based on system load
-func (rl *RateLimiter) GetAdaptiveLimit(baseLimit int) int {
-	// Get system metrics from Redis
-	cpuUsage, _ := rl.redis.Get(rl.ctx, "system:cpu_usage").Float64()
-	memUsage, _ := rl.redis.Get(rl.ctx, "system:memory_usage").Float64()
-
-	// Reduce limits if system is under high load
-	if cpuUsage > 80 || memUsage > 80 {
-		return baseLimit / 2
-	} else if cpuUsage > 60 || memUsage > 60 {
-		return int(float64(baseLimit) * 0.75)
-	}
-
-	return baseLimit
-}
-
-// Whitelist certain users (premium users, admins)
-func (rl *RateLimiter) IsWhitelisted(userID int64) (bool, error) {
-	key := "whitelist_users"
-	return rl.redis.SIsMember(rl.ctx, key, userID).Result()
-}
-
-// Add user to whitelist
-func (rl *RateLimiter) AddToWhitelist(userID int64) error {
-	key := "whitelist_users"
-	return rl.redis.SAdd(rl.ctx, key, userID).Err()
-}
-
-// Temporary ban for abusive users
-func (rl *RateLimiter) BanUser(userID int64, duration time.Duration) error {
-	key := fmt.Sprintf("banned_user:%d", userID)
-	return rl.redis.Set(rl.ctx, key, "banned", duration).Err()
-}
-
-// Check if user is banned
-func (rl *RateLimiter) IsBanned(userID int64) (bool, error) {
-	key := fmt.Sprintf("banned_user:%d", userID)
-	_, err := rl.redis.Get(rl.ctx, key).Result()
-	if err == redis.Nil {
-		return false, nil
-	}
-	return err == nil, err
 }
