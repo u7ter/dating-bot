@@ -1,45 +1,21 @@
 package main
 
 import (
-	"context"
 	"database/sql"
 	"log"
 	"os"
-	"os/signal"
 	"strconv"
-	"sync"
-	"syscall"
 	"time"
 
-	"github.com/go-redis/redis/v8"
 	_ "github.com/go-sql-driver/mysql"
-	"github.com/sony/gobreaker"
 	tele "gopkg.in/telebot.v3"
-	"gopkg.in/telebot.v3/middleware"
 )
 
 type Bot struct {
 	*tele.Bot
-	db             *sql.DB
-	redis          *redis.Client
-	rateLimiter    *RateLimiter
-	circuitBreaker *gobreaker.CircuitBreaker
-	userCache      *UserCache
-	matchQueue     *MatchQueue
-	ctx            context.Context
-	cancel         context.CancelFunc
-	wg             *sync.WaitGroup
+	db *sql.DB
 }
 
-type Config struct {
-	TelegramToken    string
-	DatabaseURL      string
-	RedisURL         string
-	MaxDBConnections int
-	RateLimit        int
-	BurstLimit       int
-	WorkerCount      int
-}
 type User struct {
 	ID          int64     `json:"id"`
 	TelegramID  int64     `json:"telegram_id"`
@@ -79,85 +55,41 @@ type UserState struct {
 var userStates = make(map[int64]*UserState)
 
 func main() {
-	config := loadConfig()
-
-	// Initialize context for graceful shutdown
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Initialize database with connection pooling
-	db, err := initDBWithPool(config)
+	// Initialize database
+	db, err := initDB()
 	if err != nil {
 		log.Fatal("Failed to connect to database:", err)
 	}
 	defer db.Close()
 
-	// Initialize Redis
-	redisClient, err := initRedis(config)
-	if err != nil {
-		log.Fatal("Failed to connect to Redis:", err)
-	}
-	defer redisClient.Close()
-
-	// Initialize bot with middleware
-	bot, err := initBotWithMiddleware(config)
+	// Initialize bot
+	bot, err := tele.NewBot(tele.Settings{
+		Token:  os.Getenv("TELEGRAM_BOT_TOKEN"),
+		Poller: &tele.LongPoller{Timeout: 10 * time.Second},
+	})
 	if err != nil {
 		log.Fatal("Failed to create bot:", err)
 	}
 
-	// Initialize components
-	app := &Bot{
-		Bot:            bot,
-		db:             db,
-		redis:          redisClient,
-		rateLimiter:    NewRateLimiter(redisClient, config.RateLimit, config.BurstLimit),
-		circuitBreaker: initCircuitBreaker(),
-		userCache:      NewUserCache(redisClient),
-		matchQueue:     NewMatchQueue(redisClient),
-		ctx:            ctx,
-		cancel:         cancel,
-		wg:             &sync.WaitGroup{},
-	}
-
-	// Start background workers
-	app.startWorkers(config.WorkerCount)
+	app := &Bot{Bot: bot, db: db}
 
 	// Register handlers
 	app.registerHandlers()
 
-	// Start metrics collection
-	go app.startMetricsCollection()
-
-	// Graceful shutdown
-	go app.handleShutdown()
-
-	log.Println("Bot started with high-load optimizations...")
+	log.Println("Bot started...")
 	app.Start()
 }
 
-func loadConfig() *Config {
-	return &Config{
-		TelegramToken:    getEnv("TELEGRAM_BOT_TOKEN", ""),
-		DatabaseURL:      getEnv("DATABASE_URL", "root:password@tcp(mysql:3306)/dating_bot?charset=utf8mb4&parseTime=True&loc=Local"),
-		RedisURL:         getEnv("REDIS_URL", "redis:6379"),
-		MaxDBConnections: getEnvInt("MAX_DB_CONNECTIONS", 100),
-		RateLimit:        getEnvInt("RATE_LIMIT", 10),
-		BurstLimit:       getEnvInt("BURST_LIMIT", 20),
-		WorkerCount:      getEnvInt("WORKER_COUNT", 10),
+func initDB() (*sql.DB, error) {
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		dsn = "root:password@tcp(mysql:3306)/dating_bot?charset=utf8mb4&parseTime=True&loc=Local"
 	}
-}
 
-func initDBWithPool(config *Config) (*sql.DB, error) {
-	db, err := sql.Open("mysql", config.DatabaseURL)
+	db, err := sql.Open("mysql", dsn)
 	if err != nil {
 		return nil, err
 	}
-
-	// Configure connection pool
-	db.SetMaxOpenConns(config.MaxDBConnections)
-	db.SetMaxIdleConns(config.MaxDBConnections / 2)
-	db.SetConnMaxLifetime(time.Hour)
-	db.SetConnMaxIdleTime(time.Minute * 30)
 
 	// Wait for database to be ready
 	for i := 0; i < 30; i++ {
@@ -171,107 +103,324 @@ func initDBWithPool(config *Config) (*sql.DB, error) {
 	return db, nil
 }
 
-func initRedis(config *Config) (*redis.Client, error) {
-	rdb := redis.NewClient(&redis.Options{
-		Addr:         config.RedisURL,
-		Password:     getEnv("REDIS_PASSWORD", ""),
-		DB:           0,
-		PoolSize:     50,
-		MinIdleConns: 10,
-		MaxRetries:   3,
-		DialTimeout:  time.Second * 5,
-		ReadTimeout:  time.Second * 3,
-		WriteTimeout: time.Second * 3,
-	})
+func (b *Bot) registerHandlers() {
+	// Commands
+	b.Handle("/start", b.handleStart)
+	b.Handle("/help", b.handleHelp)
+	b.Handle("/profile", b.handleProfile)
+	b.Handle("/edit", b.handleEdit)
+	b.Handle("/search", b.handleSearch)
+	b.Handle("/matches", b.handleMatches)
+	b.Handle("/delete", b.handleDelete)
 
-	// Test connection
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
-	defer cancel()
+	// Callback buttons
+	b.Handle(&btnLike, b.handleLike)
+	b.Handle(&btnDislike, b.handleDislike)
+	b.Handle(&btnBack, b.handleBack)
+	b.Handle(&btnStartChat, b.handleStartChat)
+	b.Handle(&btnEditName, b.handleEditName)
+	b.Handle(&btnEditAge, b.handleEditAge)
+	b.Handle(&btnEditGender, b.handleEditGender)
+	b.Handle(&btnEditDescription, b.handleEditDescription)
+	b.Handle(&btnEditCity, b.handleEditCity)
+	b.Handle(&btnEditLookingFor, b.handleEditLookingFor)
+	b.Handle(&btnEditPhotos, b.handleEditPhotos)
 
-	_, err := rdb.Ping(ctx).Result()
-	return rdb, err
+	// Text and photo handlers
+	b.Handle(tele.OnText, b.handleText)
+	b.Handle(tele.OnPhoto, b.handlePhoto)
 }
 
-func initBotWithMiddleware(config *Config) (*tele.Bot, error) {
-	bot, err := tele.NewBot(tele.Settings{
-		Token:  config.TelegramToken,
-		Poller: &tele.LongPoller{Timeout: 10 * time.Second},
-	})
+// Button definitions
+var (
+	btnLike = tele.InlineButton{
+		Unique: "like",
+		Text:   "❤️",
+	}
+	btnDislike = tele.InlineButton{
+		Unique: "dislike",
+		Text:   "❌",
+	}
+	btnBack = tele.InlineButton{
+		Unique: "back",
+		Text:   "🔁 Назад",
+	}
+	btnStartChat = tele.InlineButton{
+		Unique: "start_chat",
+		Text:   "💬 Почати чат",
+	}
+	btnEditName = tele.InlineButton{
+		Unique: "edit_name",
+		Text:   "✏️ Ім'я",
+	}
+	btnEditAge = tele.InlineButton{
+		Unique: "edit_age",
+		Text:   "✏️ Вік",
+	}
+	btnEditGender = tele.InlineButton{
+		Unique: "edit_gender",
+		Text:   "✏️ Стать",
+	}
+	btnEditDescription = tele.InlineButton{
+		Unique: "edit_description",
+		Text:   "✏️ Опис",
+	}
+	btnEditCity = tele.InlineButton{
+		Unique: "edit_city",
+		Text:   "✏️ Місто",
+	}
+	btnEditLookingFor = tele.InlineButton{
+		Unique: "edit_looking_for",
+		Text:   "✏️ Шукаю",
+	}
+	btnEditPhotos = tele.InlineButton{
+		Unique: "edit_photos",
+		Text:   "📷 Фото",
+	}
+)
+
+func (b *Bot) handleStart(c tele.Context) error {
+	user, err := b.getUser(c.Sender().ID)
+	if err != nil && err != sql.ErrNoRows {
+		return c.Send("Помилка при перевірці профілю")
+	}
+
+	if user != nil {
+		return c.Send("Ласкаво просимо назад! Ваш профіль вже створено.\n\nВикористовуйте /search для пошуку анкет або /profile для перегляду профілю.")
+	}
+
+	// Start registration process
+	userStates[c.Sender().ID] = &UserState{
+		TelegramID: c.Sender().ID,
+		State:      "registration_name",
+		Data:       make(map[string]interface{}),
+	}
+
+	return c.Send("Привіт! 👋 Ласкаво просимо до бота знайомств!\n\nДавайте створимо ваш профіль. Як вас звати?")
+}
+
+func (b *Bot) handleHelp(c tele.Context) error {
+	help := `🤖 Довідка по боту знайомств
+
+Команди:
+/start - Почати роботу з ботом
+/profile - Переглянути свій профіль  
+/edit - Редагувати профіль
+/search - Шукати анкети
+/matches - Переглянути збіги
+/delete - Видалити профіль
+/help - Ця довідка
+
+Як користуватися:
+1. Створіть профіль командою /start
+2. Шукайте анкети командою /search
+3. Ставте ❤️ або ❌ 
+4. При взаємній симпатії з'явиться збіг!
+5. Переглядайте збіги командою /matches`
+
+	return c.Send(help)
+}
+
+func (b *Bot) handleProfile(c tele.Context) error {
+	user, err := b.getUser(c.Sender().ID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return c.Send("У вас ще немає профілю. Використовуйте /start для створення.")
+		}
+		return c.Send("Помилка при отриманні профілю")
+	}
+
+	profileText := b.formatProfile(user)
+
+	markup := &tele.ReplyMarkup{}
+	markup.Inline(
+		markup.Row(btnEditName, btnEditAge),
+		markup.Row(btnEditGender, btnEditCity),
+		markup.Row(btnEditDescription),
+		markup.Row(btnEditLookingFor, btnEditPhotos),
+	)
+
+	if len(user.Photos) > 0 {
+		photo := &tele.Photo{File: tele.FromURL(user.Photos[0])}
+		return c.Send(photo, profileText, markup)
+	}
+
+	return c.Send(profileText, markup)
+}
+
+func (b *Bot) handleEdit(c tele.Context) error {
+	return b.handleProfile(c)
+}
+
+func (b *Bot) handleSearch(c tele.Context) error {
+	user, err := b.getUser(c.Sender().ID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return c.Send("У вас ще немає профілю. Використовуйте /start для створення.")
+		}
+		return c.Send("Помилка при отриманні профілю")
+	}
+
+	candidate, err := b.getNextCandidate(user.TelegramID)
+	if err != nil {
+		return c.Send("Наразі немає доступних анкет. Спробуйте пізніше!")
+	}
+
+	return b.showCandidate(c, candidate)
+}
+
+func (b *Bot) handleMatches(c tele.Context) error {
+	matches, err := b.getUserMatches(c.Sender().ID)
+	if err != nil {
+		return c.Send("Помилка при отриманні збігів")
+	}
+
+	if len(matches) == 0 {
+		return c.Send("У вас поки що немає збігів. Продовжуйте шукати! 💪")
+	}
+
+	text := "💕 Ваші збіги:\n\n"
+	for i, match := range matches {
+		text += strconv.Itoa(i+1) + ". " + match.Name + ", " + strconv.Itoa(match.Age) + " років\n"
+	}
+
+	return c.Send(text)
+}
+
+func (b *Bot) handleDelete(c tele.Context) error {
+	err := b.deleteUser(c.Sender().ID)
+	if err != nil {
+		return c.Send("Помилка при видаленні профілю")
+	}
+
+	delete(userStates, c.Sender().ID)
+	return c.Send("Ваш профіль видалено. Дякуємо за використання бота! 👋")
+}
+
+func (b *Bot) handleText(c tele.Context) error {
+	state, exists := userStates[c.Sender().ID]
+	if !exists {
+		return c.Send("Використовуйте /start для початку роботи з ботом")
+	}
+
+	switch state.State {
+	case "registration_name":
+		return b.handleRegistrationName(c, state)
+	case "registration_age":
+		return b.handleRegistrationAge(c, state)
+	case "registration_gender":
+		return b.handleRegistrationGender(c, state)
+	case "registration_description":
+		return b.handleRegistrationDescription(c, state)
+	case "registration_city":
+		return b.handleRegistrationCity(c, state)
+	case "registration_looking_for":
+		return b.handleRegistrationLookingFor(c, state)
+	case "edit_name":
+		return b.handleEditNameText(c, state)
+	case "edit_age":
+		return b.handleEditAgeText(c, state)
+	case "edit_description":
+		return b.handleEditDescriptionText(c, state)
+	case "edit_city":
+		return b.handleEditCityText(c, state)
+	}
+
+	return nil
+}
+
+func (b *Bot) handlePhoto(c tele.Context) error {
+	state, exists := userStates[c.Sender().ID]
+	if !exists {
+		return c.Send("Використовуйте /start для початку роботи з ботом")
+	}
+
+	if state.State == "registration_photos" || state.State == "edit_photos" {
+		return b.handlePhotoUpload(c, state)
+	}
+
+	return c.Send("Надішліть фото тільки під час реєстрації або редагування профілю")
+}
+
+// Database helper methods
+func (b *Bot) getUser(telegramID int64) (*User, error) {
+	query := `SELECT id, telegram_id, name, age, gender, description, city, looking_for, created_at, is_active FROM users WHERE telegram_id = ?`
+
+	user := &User{}
+	err := b.db.QueryRow(query, telegramID).Scan(
+		&user.ID, &user.TelegramID, &user.Name, &user.Age, &user.Gender,
+		&user.Description, &user.City, &user.LookingFor, &user.CreatedAt, &user.IsActive,
+	)
+
 	if err != nil {
 		return nil, err
 	}
 
-	// Add middleware
-	bot.Use(middleware.Logger())
-	bot.Use(middleware.Recover())
-
-	return bot, nil
-}
-
-func initCircuitBreaker() *gobreaker.CircuitBreaker {
-	settings := gobreaker.Settings{
-		Name:        "database",
-		MaxRequests: 3,
-		Interval:    time.Second * 60,
-		Timeout:     time.Second * 30,
-		ReadyToTrip: func(counts gobreaker.Counts) bool {
-			failureRatio := float64(counts.TotalFailures) / float64(counts.Requests)
-			return counts.Requests >= 3 && failureRatio >= 0.6
-		},
-	}
-	return gobreaker.NewCircuitBreaker(settings)
-}
-
-func (b *Bot) startWorkers(workerCount int) {
-	for i := 0; i < workerCount; i++ {
-		b.wg.Add(1)
-		go b.matchWorker(i)
+	// Get photos
+	photos, err := b.getUserPhotos(user.ID)
+	if err == nil {
+		user.Photos = photos
 	}
 
-	b.wg.Add(1)
-	go b.notificationWorker()
-
-	b.wg.Add(1)
-	go b.cleanupWorker()
+	return user, nil
 }
 
-func (b *Bot) handleShutdown() {
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
-	<-sigChan
-	log.Println("Shutting down gracefully...")
-
-	b.cancel()
-	b.Stop()
-
-	// Wait for workers to finish
-	done := make(chan struct{})
-	go func() {
-		b.wg.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		log.Println("All workers stopped")
-	case <-time.After(30 * time.Second):
-		log.Println("Timeout waiting for workers")
+func (b *Bot) getUserPhotos(userID int64) ([]string, error) {
+	query := `SELECT photo_url FROM user_photos WHERE user_id = ? ORDER BY id`
+	rows, err := b.db.Query(query, userID)
+	if err != nil {
+		return nil, err
 	}
-}
+	defer rows.Close()
 
-func getEnv(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
+	var photos []string
+	for rows.Next() {
+		var photo string
+		if err := rows.Scan(&photo); err != nil {
+			continue
+		}
+		photos = append(photos, photo)
 	}
-	return defaultValue
+
+	return photos, nil
 }
 
-func getEnvInt(key string, defaultValue int) int {
-	if value := os.Getenv(key); value != "" {
-		if intValue, err := strconv.Atoi(value); err == nil {
-			return intValue
+func (b *Bot) createUser(user *User) error {
+	query := `INSERT INTO users (telegram_id, name, age, gender, description, city, looking_for, is_active) 
+			  VALUES (?, ?, ?, ?, ?, ?, ?, true)`
+
+	result, err := b.db.Exec(query, user.TelegramID, user.Name, user.Age, user.Gender,
+		user.Description, user.City, user.LookingFor)
+	if err != nil {
+		return err
+	}
+
+	userID, err := result.LastInsertId()
+	if err != nil {
+		return err
+	}
+
+	// Save photos
+	for _, photo := range user.Photos {
+		_, err := b.db.Exec(`INSERT INTO user_photos (user_id, photo_url) VALUES (?, ?)`, userID, photo)
+		if err != nil {
+			log.Printf("Error saving photo: %v", err)
 		}
 	}
-	return defaultValue
+
+	return nil
 }
+
+func (b *Bot) formatProfile(user *User) string {
+	return "👤 Ваш профіль:\n\n" +
+		"Ім'я: " + user.Name + "\n" +
+		"Вік: " + strconv.Itoa(user.Age) + " років\n" +
+		"Стать: " + user.Gender + "\n" +
+		"Місто: " + user.City + "\n" +
+		"Шукаю: " + user.LookingFor + "\n" +
+		"Опис: " + user.Description + "\n" +
+		"Фото: " + strconv.Itoa(len(user.Photos)) + " шт."
+}
+
+// Additional handler methods would continue here...
+// This includes registration flow, editing, matching logic, etc.
